@@ -22,9 +22,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Preconditions;
-import com.flume.source.dirwatchdog.DirChangeHandler;
-import com.flume.source.dirwatchdog.DirWatcher;
-import com.flume.source.dirwatchdog.RegexFileFilter;
+import com.hexun.flume.source.dirwatchdog.DirChangeHandler;
+import com.hexun.flume.source.dirwatchdog.DirWatcher;
+import com.hexun.flume.source.dirwatchdog.RegexFileFilter;
 
 public class TailDirSourceNG extends AbstractSource implements Configurable,
 		EventDrivenSource {
@@ -37,6 +37,7 @@ public class TailDirSourceNG extends AbstractSource implements Configurable,
 	private String monitorDirPath;
 	private String positionLogPath;
 	private String fileEncode;
+	private String fileNameSeparator;
 	private String fileRegex;
 	private int batchSize;
 	private boolean startFromEnd;
@@ -46,13 +47,23 @@ public class TailDirSourceNG extends AbstractSource implements Configurable,
 	private String startChar;
 	private boolean isNumberFile;
 	private boolean isAddFileName;
+	private int overTime;
 
 	public SourceCounter sourceCounter;
 
+	@Deprecated
+	private String fileNameDelimRegex;
+	@Deprecated
+	private String fileNameDelimMode;
+
+	// TODO
+	private String fileNameIncludeStrRegex;
+	private String fileNameExcludeStrRegex;
 	private boolean loopSubDir;
 
 	private int fileNameLength;
 
+	private String mustHave;
 
 	@Override
 	public void configure(Context context) {
@@ -64,17 +75,28 @@ public class TailDirSourceNG extends AbstractSource implements Configurable,
 		this.fileRegex = context.getString("fileRegex", ".*");
 		this.batchSize = context.getInteger("batchSize", 100);
 		this.startFromEnd = context.getBoolean("startFromEnd", true);
+		this.fileNameDelimRegex = context.getString("fileNameDelimRegex", null);
+		this.fileNameDelimMode = context.getString("fileNameDelimMode", null);
 		this.fileNameSkipString = context.getString("fileNameSkipString",
 				"flume");
+		this.fileNameSeparator =  context.getString("fileNameSeparator",
+				"\t");
 		this.fileNameSkipEndString = context.getString("fileNameSkipEndString",
 				"1");
 		this.fileNameLength = context.getInteger("fileNameLength", 0);
 		this.readFromLog = context.getBoolean("readFromLog", false);
 		this.loopSubDir = context.getBoolean("loopSubDir", false);
 		this.startChar = context.getString("startChar", "-1");
-		this.isNumberFile = context.getBoolean("isTailNumberfile", true);
-		this.isAddFileName = context.getBoolean("isAddFileName", false);
+		this.isNumberFile=context.getBoolean("isTailNumberfile",true);
+		this.isAddFileName=context.getBoolean("isAddFileName",false);
+		this.mustHave=context.getString("mustHave","-1");
+		this.overTime=context.getInteger("overTime",7);
 
+		// TODO 待加业务逻辑
+		this.fileNameIncludeStrRegex = context
+				.getString("fileNameIncludeStrRegex");
+		this.fileNameExcludeStrRegex = context
+				.getString("fileNameExcludeStrRegex");
 
 		Preconditions.checkNotNull(monitorDirPath == null,
 				"Monitoring directory path is null!!!");
@@ -90,8 +112,8 @@ public class TailDirSourceNG extends AbstractSource implements Configurable,
 				"Attempting to open an already open TailDirSource ("
 						+ monitorDirPath + ", \"" + fileRegex + "\")");
 		File positionLog = new File(positionLogPath + "/position.log");
-		File positionLogDir = new File(positionLogPath);
-		if (!positionLogDir.exists()) {
+		File positionLogDir=new File(positionLogPath);
+		if(!positionLogDir.exists()){
 			positionLogDir.mkdirs();
 		}
 		if (!positionLog.exists()) {
@@ -142,12 +164,12 @@ public class TailDirSourceNG extends AbstractSource implements Configurable,
 					}
 					return;
 				}
-
-				if (System.currentTimeMillis() - f.lastModified() > 604800000) {
+				
+				if (System.currentTimeMillis()-f.lastModified()>86400000*overTime){
 					return;
 				}
-
-				if (!isNumberFile && hasDigit(f.getName())) {
+				
+				if(!isNumberFile && hasDigit(f.getName())){
 					return;
 				}
 
@@ -165,67 +187,90 @@ public class TailDirSourceNG extends AbstractSource implements Configurable,
 						&& !f.getName().endsWith(fileNameSkipEndString)) {
 					return;
 				}
+				
+				if(!mustHave.equals("-1")  &&  !f.getName().contains(mustHave)){
+					return;
+				}
 
 				// Add a new file to the multi tail.
 				logger.info("added file " + f);
+				
 				Cursor c;
-				if (startFromEnd && !dirChecked && !readFromLog) {
-					// init cursor positions on first dir check when
-					// startFromEnd is set
-					// to true
-					c = new Cursor(source, sourceCounter, f, f.length(), f
-							.length(), f.lastModified(), fileEncode, batchSize,
-							positionLog, startChar, isAddFileName);
-				} else if (readFromLog) {
-					c = new Cursor(source, sourceCounter, f, fileEncode,
-							batchSize, positionLog, startChar, isAddFileName);
-					List<String> tailedFile = readFileByLines(positionLog);
-					String filename = f.getAbsolutePath().trim();
-					if (!tailedFile.contains(filename)) {
+				if (fileNameDelimRegex == null) {
+					if (startFromEnd && !dirChecked && !readFromLog) {
+						// init cursor positions on first dir check when
+						// startFromEnd is set
+						// to true
+						c = new Cursor(source, sourceCounter, f, f.length(), f
+								.length(), f.lastModified(), fileEncode,
+								batchSize, positionLog, startChar,isAddFileName,fileNameSeparator);
+					} else if (readFromLog) {
 						c = new Cursor(source, sourceCounter, f, fileEncode,
-								batchSize, positionLog, startChar,
-								isAddFileName);
-					} else {
-						synchronized (positionLog) {
-							BufferedReader reader = null;
-							try {
-								reader = new BufferedReader(new FileReader(
-										positionLog));
-								String line = null;
-								while ((line = reader.readLine()) != null) {
-									if (line.contains(f.getAbsolutePath())
-											&& line.split(",").length > 3) {
-										long lastReadOffset = Long
-												.parseLong(line.split(",")[1]);
-										long lastFileLen = Long.parseLong(line
-												.split(",")[2]);
-										long lastMod = Long.parseLong(line
-												.split(",")[3]);
-										c = new Cursor(source, sourceCounter,
-												f, lastReadOffset, lastFileLen,
-												lastMod, fileEncode, batchSize,
-												positionLog, startChar,
-												isAddFileName);
-										break;
+								batchSize, positionLog, startChar,isAddFileName,fileNameSeparator);
+						List<String> tailedFile = readFileByLines(positionLog);
+						String filename = f.getAbsolutePath().trim();
+						if (!tailedFile.contains(filename)) {
+							c = new Cursor(source, sourceCounter, f,
+									fileEncode, batchSize, positionLog,
+									startChar,isAddFileName,fileNameSeparator);
+						} else {
+							synchronized (positionLog) {
+								BufferedReader reader = null;
+								try {
+									reader = new BufferedReader(new FileReader(
+											positionLog));
+									String line = null;
+									while ((line = reader.readLine()) != null) {
+										if (line.contains(f.getAbsolutePath())
+												&& line.split(",").length > 3) {
+											long lastReadOffset = Long
+													.parseLong(line.split(",")[1]);
+											long lastFileLen = Long
+													.parseLong(line.split(",")[2]);
+											long lastMod = Long.parseLong(line
+													.split(",")[3]);
+											c = new Cursor(source,
+													sourceCounter, f,
+													lastReadOffset,
+													lastFileLen, lastMod,
+													fileEncode, batchSize,
+													positionLog, startChar,isAddFileName,fileNameSeparator);
+											break;
+										}
 									}
-								}
-								reader.close();
-							} catch (IOException e) {
-								e.printStackTrace();
-							} finally {
-								if (reader != null) {
-									try {
-										reader.close();
-									} catch (IOException e1) {
+									reader.close();
+								} catch (IOException e) {
+									e.printStackTrace();
+								} finally {
+									if (reader != null) {
+										try {
+											reader.close();
+										} catch (IOException e1) {
+										}
 									}
 								}
 							}
-						}
 
+						}
+					} else {
+						c = new Cursor(source, sourceCounter, f, fileEncode,
+								batchSize, positionLog, startChar,isAddFileName,fileNameSeparator);
 					}
 				} else {
-					c = new Cursor(source, sourceCounter, f, fileEncode,
-							batchSize, positionLog, startChar, isAddFileName);
+					// special delimiter modes
+					if (startFromEnd && !dirChecked) {
+						// init cursor positions on first dir check when
+						// startFromEnd is set
+						// to true
+						c = new CustomDelimCursor(source, sourceCounter, f,
+								fileEncode, batchSize, f.length(), f.length(),
+								f.lastModified(), fileNameDelimRegex,
+								fileNameDelimMode, positionLog, startChar,isAddFileName,fileNameSeparator);
+					} else {
+						c = new CustomDelimCursor(source, sourceCounter, f,
+								fileEncode, batchSize, fileNameDelimRegex,
+								fileNameDelimMode, positionLog, startChar,isAddFileName,fileNameSeparator);
+					}
 				}
 
 				try {
@@ -235,31 +280,31 @@ public class TailDirSourceNG extends AbstractSource implements Configurable,
 					c.close();
 					return;
 				}
-				// logger.warn(f.lastModified()+"");
-				// logger.warn(System.currentTimeMillis()+"");
+//				logger.warn(f.lastModified()+"");
+//				logger.warn(System.currentTimeMillis()+"");
 				curmap.put(f.getPath(), c);
 				tail.addCursor(c);
-
-				// remove old File
+				
+				//remove old File
 				Set<String> curKey = curmap.keySet();
-				List<String> hasToRemoveFile = new ArrayList<String>();
+				List<String> hasToRemoveFile=new ArrayList<String>();
 				Iterator<String> keys = curKey.iterator();
-				while (keys.hasNext()) {
-					String key = keys.next();
-					File tmpFile = new File(key);
-					if (System.currentTimeMillis() - tmpFile.lastModified() > 100000000) {
+				while(keys.hasNext()){
+					String key=keys.next();
+					File tmpFile=new File(key);
+					if(System.currentTimeMillis()-tmpFile.lastModified()>100000000){
 						hasToRemoveFile.add(key);
 					}
 				}
-				for (int i = 0; i < hasToRemoveFile.size(); i++) {
-					String removeFile = hasToRemoveFile.get(i);
-					Cursor removeCur = curmap.remove(removeFile);
-					if (removeCur != null) {
+				for(int i=0;i<hasToRemoveFile.size();i++){
+					String removeFile=hasToRemoveFile.get(i);
+					Cursor removeCur=curmap.remove(removeFile);
+					if(removeCur!=null){
 						logger.warn("removed file " + removeFile);
 						tail.removeCursor(removeCur);
 					}
 				}
-
+				
 			}
 
 			@Override
