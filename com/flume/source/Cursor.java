@@ -24,6 +24,8 @@ import org.slf4j.LoggerFactory;
 public class Cursor {
 	private static final Logger logger = LoggerFactory.getLogger(Cursor.class);
 
+	
+	private String insertLine="";
 	private SystemClock systemClock = new SystemClock();
 	private Long lastPushToChannel = systemClock.currentTimeMillis();
 
@@ -31,6 +33,8 @@ public class Cursor {
 	final File file;
 	// PositionLog
 	final File positionlog;
+	
+	private String fileNameSeparator="\t";
 
 	// For buffering reads
 	final ByteBuffer buf = ByteBuffer.allocateDirect(Short.MAX_VALUE*30);
@@ -52,14 +56,14 @@ public class Cursor {
 	boolean isAddFileName;
 
 	public Cursor(AbstractSource source, SourceCounter sourceCounter, File f,
-			String charEncode, int batchSize, File positionlog, String startChar,boolean isAddFileName) {
+			String charEncode, int batchSize, File positionlog, String startChar,boolean isAddFileName,String fileNameSeparator) {
 		this(source, sourceCounter, f, 0, 0, 0, charEncode, batchSize,
-				positionlog, startChar,isAddFileName);
+				positionlog, startChar,isAddFileName,fileNameSeparator);
 	}
 
 	Cursor(AbstractSource source, SourceCounter sourceCounter, File f,
 			long lastReadOffset, long lastFileLen, long lastMod,
-			String charEncode, int batchSize, File positionlog, String startChar,boolean isAddFileName) {
+			String charEncode, int batchSize, File positionlog, String startChar,boolean isAddFileName,String fileNameSeparator) {
 		this.source = source;
 		this.sourceCounter = sourceCounter;
 		this.batchSize = batchSize;
@@ -72,6 +76,7 @@ public class Cursor {
 		this.positionlog = positionlog;
 		this.startChar = startChar;
 		this.isAddFileName=isAddFileName;
+		this.fileNameSeparator=fileNameSeparator;
 	}
 
 	/**
@@ -219,13 +224,13 @@ public class Cursor {
 		int start = buf.position();
 		buf.mark();
 		final List<Event> eventList = new ArrayList<Event>();
-		String insertLine = "";
+//		String insertLine = "";
 
 		while (buf.hasRemaining()) {
 			byte b = buf.get();
 
-			if (!startChar.equals("-1")) {
-				if (b == startChar.charAt(0)) {
+			if(startChar.equals("-")){
+				if (b == 10) {
 					int end = buf.position();
 					int sz = end - start;
 					byte[] body = new byte[sz - 1];
@@ -240,14 +245,12 @@ public class Cursor {
 					synchronized (eventList) {
 						String tmpLine = new String(body, charEncode)
 								.replaceAll("\n", " ").trim();
-						if (tmpLine.startsWith("INFO")
-								|| tmpLine.startsWith("DEBUG")
-								|| tmpLine.startsWith("WARN")
-								|| tmpLine.startsWith("ERROR")
-								|| tmpLine.startsWith("201")) {
+						if (tmpLine.startsWith("-")
+								) {
+							insertLine=insertLine+tmpLine;
 								sourceCounter.incrementEventReceivedCount();
 								if(isAddFileName){
-									insertLine=file.getPath()+" "+insertLine;
+									insertLine=file.getPath()+fileNameSeparator+insertLine;
 								}
 								eventList.add(EventBuilder.withBody(insertLine
 										.getBytes()));
@@ -256,13 +259,52 @@ public class Cursor {
 									flushEventBatch(eventList);
 								}
 						} else {
-							insertLine = insertLine + startChar.charAt(0)
+							insertLine = tmpLine;
+						}
+					}
+					madeProgress = true;
+				}
+			}
+			else if (!startChar.equals("-1")) {
+				if (b == 10) {
+					int end = buf.position();
+					int sz = end - start;
+					byte[] body = new byte[sz - 1];
+					buf.reset(); // go back to mark
+					buf.get(body, 0, sz - 1); // read data
+					buf.get(); // read '\n'
+					buf.mark(); // new mark.
+					start = buf.position();
+					logger.debug("line info >>>>>>>>>"
+							+ new String(body, charEncode)
+									.replaceAll("\n", " "));
+					synchronized (eventList) {
+						String tmpLine = new String(body, charEncode)
+								.replaceAll("\n", " ").trim();
+						if (tmpLine.startsWith(startChar) || tmpLine.trim().equals("")
+								) {
+								sourceCounter.incrementEventReceivedCount();
+								if(isAddFileName){
+									insertLine=file.getPath()+" "+insertLine;
+								}
+								if(!insertLine.trim().equals(file.getPath())){
+									eventList.add(EventBuilder.withBody(insertLine
+											.getBytes()));
+								}
+								insertLine = tmpLine;
+								if (eventList.size() >= batchSize || timeout()) {
+									flushEventBatch(eventList);
+								}
+						} else
+						{
+							insertLine = insertLine + " "
 									+ tmpLine;
 						}
 					}
 					madeProgress = true;
 				}
-			} else {
+			}
+			else {
 				if (b == 10) {
 					int end = buf.position();
 					int sz = end - start;
